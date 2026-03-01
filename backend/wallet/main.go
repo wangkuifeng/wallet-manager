@@ -23,6 +23,26 @@ type UserAccount struct {
 	CreatedAt time.Time
 }
 
+// 提现请求参数
+type WithdrawReq struct {
+	UserID    string  `json:"user_id" binding:"required"`
+	ToAddress string  `json:"to_address" binding:"required"`
+	Amount    float64 `json:"amount" binding:"required,gt=0"`
+}
+
+// --- 1. 补充定义 UserWithdrawal 结构体 ---
+// 必须定义这个结构体，GORM 才能把 Go 的数据映射到数据库表
+type UserWithdrawal struct {
+	ID        uint    `gorm:"primaryKey"`
+	UserID    string  `gorm:"type:varchar(64);not null"`
+	ToAddress string  `gorm:"type:char(42);not null"`
+	Amount    float64 `gorm:"type:decimal(36,18);not null"`
+	TxHash    string  `gorm:"type:char(66)"`
+	Status    int     `gorm:"default:0"` // 0:待处理, 1:处理中, 2:成功, 3:失败
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 var db *gorm.DB
 
 func main() {
@@ -38,7 +58,64 @@ func main() {
 	// 对外接口：为用户分配充值地址
 	r.POST("/api/v1/user/allocate_address", allocateAddressHandler)
 
+	// 添加提现路由
+	r.POST("/api/v1/user/withdraw", withdrawHandler)
+
 	r.Run(":8080") // 业务服务运行在 8080
+}
+
+func withdrawHandler(c *gin.Context) {
+	var req WithdrawReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "参数错误"})
+		return
+	}
+
+	// --- 开启事务 ---
+	tx := db.Begin()
+	defer tx.Rollback()
+
+	// --- 2. 修复 RowsAffected 错误 ---
+	// 执行扣款 SQL
+	result := tx.Exec("UPDATE user_accounts SET balance = balance - ? WHERE user_id = ? AND balance >= ?", req.Amount, req.UserID, req.Amount)
+
+	if result.Error != nil {
+		c.JSON(500, gin.H{"error": "数据库错误"})
+		return
+	}
+
+	// ❌ 之前的错误写法: rowsAffected, _ := result.RowsAffected()
+	// ✅ 正确写法: 直接访问字段
+	if result.RowsAffected == 0 {
+		c.JSON(400, gin.H{"error": "余额不足或用户不存在"})
+		return
+	}
+
+	// --- 3. 创建提现记录 (使用 GORM 的 Create 方法更安全) ---
+	withdrawRecord := UserWithdrawal{
+		UserID:    req.UserID,
+		ToAddress: req.ToAddress,
+		Amount:    req.Amount,
+		Status:    0, // 0 代表待处理
+	}
+
+	// 使用 GORM 的 Create 方法，而不是手写 INSERT SQL
+	if err := tx.Create(&withdrawRecord).Error; err != nil {
+		c.JSON(500, gin.H{"error": "创建提现订单失败"})
+		return
+	}
+
+	// --- 提交事务 ---
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(500, gin.H{"error": "事务提交失败"})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"msg":      "提现申请已提交",
+		"amount":   req.Amount,
+		"order_id": withdrawRecord.ID, // 返回生成的订单ID
+	})
 }
 
 // --- 核心逻辑 ---
