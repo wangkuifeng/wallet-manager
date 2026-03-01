@@ -100,7 +100,7 @@ func processWithdrawals() {
 		task.Status = 1
 		task.TxHash = txHash
 		db.Save(&task)
-
+		//
 		log.Printf("✅ 提现已广播 ID %d, Hash: %s", task.ID, txHash)
 	}
 }
