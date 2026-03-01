@@ -91,7 +91,7 @@ func scanLoop() {
 		log.Println("读取游标失败:", err)
 		return
 	}
-
+	//增加
 	// 3. 计算目标区块 (当前进度 + 1)
 	targetBlock := currentBlock + 1
 
